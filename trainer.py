@@ -1,6 +1,6 @@
 import os
 import torch 
-import horovod.torch as hvd
+#import horovod.torch as hvd
 from utils import remove_partial_mean_with_mask, assert_partial_mean_zero_with_mask
 from visualizer import save_xyz_file
 from dataset import create_templates_for_linker_generation
