@@ -4,25 +4,49 @@ import torch
 import pandas as pd
 from tqdm import tqdm 
 import random
+from os.path import exists
 
 from const import NUMBER_OF_ATOM_TYPES, ATOM2IDX, IDX2ATOM, CHARGES
 from data_utils import smi2sdffile, sdf2nx, get_map_ids_from_nx
 
+# Helper to catch all types of invalid SMILES
+def is_invalid_smi(smi):
+    return (
+        pd.isna(smi) or
+        not isinstance(smi, str) or
+        smi.strip().lower() in ["", "none", "nan"]
+    )
 
-datas = pd.read_csv('protacDB_smiles.csv')
-def smi2sdf(i):
-    if datas['linker_canonical'][i] == "None":
-        print(datas["id_protac"][i])
+# This version accepts a row dict (not index)
+def smi2sdf(row):
+    smi_linker = row['linker_canonical']
+    smi_protac = row['smiles_canonical']
+    protac_id = row['id_protac']
+
+    if is_invalid_smi(smi_linker):
+        print(f"Skipping {protac_id} due to invalid linker SMILES")
         return
-    smi2sdffile(datas['linker_canonical'][i],f'data/{datas["id_protac"][i]}_linker.sdf')
-    smi2sdffile(datas['smiles_canonical'][i],f'data/{datas["id_protac"][i]}_protac.sdf')
+
+    if is_invalid_smi(smi_protac):
+        print(f"Skipping {protac_id} due to invalid PROTAC SMILES")
+        return
+
+    try:
+        smi2sdffile(smi_linker, f'data/{protac_id}_linker.sdf')
+        smi2sdffile(smi_protac, f'data/{protac_id}_protac.sdf')
+    except Exception as e:
+        print(f"Error processing {protac_id}: {e}")
 
 if __name__ == "__main__":
-    # generate sdf files
+    datas = pd.read_csv('protac_linker_smiles.csv')
+    datas.columns = datas.columns.str.strip().str.lower()
+    datas = datas.drop_duplicates(subset='id_protac', keep='first')
 
-    # 3270 -> 3243
+
+    # generate sdf files using multiprocessing (pass rows not index!)
+    rows = datas.to_dict(orient='records')
     pool = multiprocessing.Pool(30)
-    pool.map(smi2sdf, range(3270))
+    pool.map(smi2sdf, rows)
     pool.close()
     pool.join()
 
@@ -30,14 +54,26 @@ if __name__ == "__main__":
     ids = list(set([_.split('_')[0] for _ in os.listdir('data')]))
     train_sets = []
     for id_i in tqdm(ids):
-        G = sdf2nx(f'data/{id_i}_protac.sdf')
-        G_linker = sdf2nx(f'data/{id_i}_linker.sdf')
+        protac_path = f'data/{id_i}_protac.sdf'
+        linker_path = f'data/{id_i}_linker.sdf'
+
+        if not exists(protac_path) or not exists(linker_path):
+            print(f"Skipping {id_i} — missing sdf file(s)")
+            continue
+
+        try:
+            G = sdf2nx(protac_path)
+            G_linker = sdf2nx(linker_path)
+        except Exception as e:
+            print(f"Skipping {id_i} — sdf2nx failed: {e}")
+            continue
+
         maps, anchors = get_map_ids_from_nx(G, G_linker)
-        if len(maps) ==1:
+        if len(maps) == 1:
             n = len(G.nodes)
             n0 = G.nodes
-            n1 = maps[0] # linker
-            n2 = list(set(n0) - set(n1)) # ligand
+            n1 = maps[0]  # linker
+            n2 = list(set(n0) - set(n1))  # ligand
             positions = []
             one_hot = [] 
             charges = []
@@ -50,28 +86,25 @@ if __name__ == "__main__":
                 fragment_mask.append(1.)
                 linker_mask.append(0.)
 
-                tmp = [0.]*NUMBER_OF_ATOM_TYPES
-                tmp[ATOM2IDX[G.nodes[ligand_atom]['element']]]=1.
+                tmp = [0.] * NUMBER_OF_ATOM_TYPES
+                tmp[ATOM2IDX[G.nodes[ligand_atom]['element']]] = 1.
                 one_hot.append(tmp)
                 charges.append(CHARGES[G.nodes[ligand_atom]['element']])
-                if ligand_atom in anchors[0]:
-                    in_anchors.append(1.)
-                else:
-                    in_anchors.append(0.)
-            
+                in_anchors.append(1. if ligand_atom in anchors[0] else 0.)
+
             for linker_atom in n1:
                 positions.append(G.nodes[linker_atom]['positions'])
                 fragment_mask.append(0.)
                 linker_mask.append(1.)
 
-                tmp = [0.]*NUMBER_OF_ATOM_TYPES
-                tmp[ATOM2IDX[G.nodes[linker_atom]['element']]]=1.
+                tmp = [0.] * NUMBER_OF_ATOM_TYPES
+                tmp[ATOM2IDX[G.nodes[linker_atom]['element']]] = 1.
                 one_hot.append(tmp)
                 charges.append(CHARGES[G.nodes[linker_atom]['element']])
 
             train_sets.append({
                 'uuid': id_i,
-                'name': datas['smiles_canonical'][int(id_i)-1],
+                'name': datas['smiles_canonical'][int(id_i) - 1],
                 'positions': torch.tensor(positions),
                 'one_hot': torch.tensor(one_hot),
                 'charges': torch.tensor(charges),
@@ -80,7 +113,6 @@ if __name__ == "__main__":
                 'linker_mask': torch.tensor(linker_mask),
                 'num_atoms': n,
             })
-
 
     random.shuffle(train_sets)
     train_data = train_sets[-800:]
