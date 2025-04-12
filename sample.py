@@ -3,7 +3,7 @@ import torch
 import argparse
 from tqdm import tqdm
 from torch import nn
-import horovod.torch as hvd
+#import horovod.torch as hvd
 from torch.utils.data import distributed, DataLoader
 from pathlib import Path
 
@@ -48,6 +48,8 @@ def create_argparser():
     return parser
 
 def main(args):
+
+    print("🚀 Entering main()") 
     # rank = hvd.local_rank()
     rank = 0
     model = EDM(
@@ -66,10 +68,13 @@ def main(args):
     model.to(rank)
     model.eval()
 
-    dataset = parse_xyz(args.xyz_path, int(args.linker_len), args.name)
+    dataset = torch.load(args.xyz_path, map_location="cpu")
+    print("✅ Dataset loaded successfully!")
+    print(f"✅ Dataset loaded! First molecule: {dataset[0]}")
     
     test_dataset = PROTACDataset(data=dataset)
     dataloader = DataLoader(test_dataset, args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate)
+    print("📡 Dataloader created!")
 
     trainer = Trainer(
         model=model,
@@ -84,6 +89,7 @@ def main(args):
         save_prefix=args.exp_name,
     )
     trainer.pred(dataloader, args.output_dir)
+    print("✅ Prediction complete!")
 
 if __name__ == "__main__":
 
